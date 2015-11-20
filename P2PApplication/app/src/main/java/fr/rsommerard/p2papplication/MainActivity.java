@@ -1,5 +1,6 @@
 package fr.rsommerard.p2papplication;
 
+import android.content.Intent;
 import android.support.v7.app.AppCompatActivity;
 import android.os.Bundle;
 import android.util.Log;
@@ -34,9 +35,11 @@ public class MainActivity extends AppCompatActivity {
 
     public void startService() {
         Log.d(TAG, "startService");
+        startService(new Intent(this, P2PService.class));
     }
 
     public void stopService() {
         Log.d(TAG, "stopService");
+        stopService(new Intent(this, P2PService.class));
     }
 }
