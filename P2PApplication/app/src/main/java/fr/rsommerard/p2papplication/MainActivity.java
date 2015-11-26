@@ -9,7 +9,7 @@ import android.widget.Button;
 
 public class MainActivity extends AppCompatActivity {
 
-    public static final String TAG = "P2PApplication";
+    private static final String TAG = "P2PApplication";
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
