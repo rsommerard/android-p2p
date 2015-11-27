@@ -12,17 +12,15 @@ import java.net.Socket;
 
 public class P2PClientThread extends Thread implements Runnable {
 
-    private static final String TAG = "P2PClientThread";
+    private final String TAG = "P2PClientThread";
 
     private final InetAddress mServiceHost;
-    private final Handler mHandler;
     private final int mServicePort;
 
-    public P2PClientThread(InetAddress serviceHost, int servicePort, Handler handler) {
+    public P2PClientThread(InetAddress serviceHost, int servicePort) {
         super();
         mServiceHost = serviceHost;
         mServicePort = servicePort;
-        mHandler = handler;
     }
 
     @Override
@@ -45,6 +43,7 @@ public class P2PClientThread extends Thread implements Runnable {
 
             Log.d(TAG, "disconnected to server");
         } catch (IOException e) {
+            Log.d(TAG, "Exception: \n" + e.getMessage());
             // Nothing
         }
     }

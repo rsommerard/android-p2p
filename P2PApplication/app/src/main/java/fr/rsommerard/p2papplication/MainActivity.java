@@ -9,7 +9,7 @@ import android.widget.Button;
 
 public class MainActivity extends AppCompatActivity {
 
-    private static final String TAG = "P2PApplication";
+    private final String TAG = "P2PApplication";
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -34,12 +34,12 @@ public class MainActivity extends AppCompatActivity {
     }
 
     public void startService() {
-        Log.d(TAG, "startService");
+        Log.d(TAG, "startService P2PService");
         startService(new Intent(this, P2PService.class));
     }
 
     public void stopService() {
-        Log.d(TAG, "stopService");
+        Log.d(TAG, "stopService P2PService");
         stopService(new Intent(this, P2PService.class));
     }
 }
