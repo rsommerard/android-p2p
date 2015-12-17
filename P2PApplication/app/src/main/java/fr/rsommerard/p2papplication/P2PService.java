@@ -3,8 +3,16 @@ package fr.rsommerard.p2papplication;
 import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.net.nsd.NsdManager;
 import android.net.nsd.NsdServiceInfo;
+import android.net.wifi.WpsInfo;
+import android.net.wifi.p2p.WifiP2pConfig;
+import android.net.wifi.p2p.WifiP2pDevice;
+import android.net.wifi.p2p.WifiP2pInfo;
+import android.net.wifi.p2p.WifiP2pManager;
+import android.net.wifi.p2p.nsd.WifiP2pDnsSdServiceInfo;
+import android.net.wifi.p2p.nsd.WifiP2pDnsSdServiceRequest;
 import android.os.Build;
 import android.os.IBinder;
 import android.util.Log;
@@ -12,11 +20,13 @@ import android.util.Log;
 import java.io.IOException;
 import java.net.InetAddress;
 import java.net.ServerSocket;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Random;
 
 public class P2PService extends Service {
 
-    private static final String SERVICE_NAME = "_RSP2P";
+    private static final String SERVICE_NAME = "_rsp2p";
     private static final String SERVICE_TYPE = "_http._tcp";
 
     private final String TAG = "P2PService";
@@ -27,10 +37,22 @@ public class P2PService extends Service {
     private NsdManager.DiscoveryListener mDiscoveryListener;
     private NsdManager mNsdManager;
     private String mServiceName;
-    private P2PClientThread mP2PClientThread;
+
+    private WifiP2pManager mWifiP2pManager;
+    private WifiP2pManager.Channel mWifiP2pChannel;
+    private WifiP2pDevice mPeer;
+    private int mPeerPort;
+    private WifiP2pDnsSdServiceRequest mWifiP2pDnsSdServiceRequest;
+    private WifiP2pDnsSdServiceInfo mWifiP2pDnsSdServiceInfo;
 
     private boolean mIsServiceDiscoveryRunning;
     private NsdManager.RegistrationListener mRegistrationListener;
+    private IntentFilter mWifiIntentFilter;
+
+    private String mDeviceName;
+
+    private P2PServerThread mP2PServerThread;
+    private P2PWifiBroadcastReceiver mWifiBroadcastReceiver;
 
     @Override
     public void onCreate() {
@@ -50,14 +72,16 @@ public class P2PService extends Service {
         try {
             serverSocket = new ServerSocket(0);
         } catch (IOException e) {
-            Log.d(TAG, "Exception: \n" + e.getMessage());
+            Log.d(TAG, "Exception: " + e.getMessage());
         }
 
-        NsdServiceInfo serviceInfo = new NsdServiceInfo();
+        // Network wifi
+        // -----------------------------------------------------------------------------------------
+        /*NsdServiceInfo serviceInfo = new NsdServiceInfo();
 
-        String randomName = String.valueOf(new Random().nextInt()) + Build.DEVICE;
+        // TODO: replace Build.DEVICE by a random name.
 
-        serviceInfo.setServiceName(randomName + SERVICE_NAME);
+        serviceInfo.setServiceName(Build.DEVICE + SERVICE_NAME);
         serviceInfo.setServiceType(SERVICE_TYPE);
         serviceInfo.setPort(serverSocket.getLocalPort());
 
@@ -85,9 +109,126 @@ public class P2PService extends Service {
         };
 
         mNsdManager.registerService(
-                serviceInfo, NsdManager.PROTOCOL_DNS_SD, mRegistrationListener);
+                serviceInfo, NsdManager.PROTOCOL_DNS_SD, mRegistrationListener);*/
 
-        new P2PServerThread(serverSocket).start();
+        // Direct wifi
+        // -----------------------------------------------------------------------------------------
+        mWifiBroadcastReceiver = new P2PWifiBroadcastReceiver(this);
+
+        mWifiIntentFilter = new IntentFilter();
+        mWifiIntentFilter.addAction(WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION);
+        mWifiIntentFilter.addAction(WifiP2pManager.WIFI_P2P_DISCOVERY_CHANGED_ACTION);
+        mWifiIntentFilter.addAction(WifiP2pManager.WIFI_P2P_PEERS_CHANGED_ACTION);
+        mWifiIntentFilter.addAction(WifiP2pManager.WIFI_P2P_STATE_CHANGED_ACTION);
+        mWifiIntentFilter.addAction(WifiP2pManager.WIFI_P2P_THIS_DEVICE_CHANGED_ACTION);
+
+        registerReceiver(mWifiBroadcastReceiver, mWifiIntentFilter);
+
+        Map<String, String> record = new HashMap<String, String>();
+        record.put("port", String.valueOf(serverSocket.getLocalPort()));
+
+        mWifiP2pDnsSdServiceInfo = WifiP2pDnsSdServiceInfo.newInstance(
+                Build.DEVICE + SERVICE_NAME, SERVICE_TYPE, record);
+
+        mWifiP2pManager = (WifiP2pManager) getSystemService(Context.WIFI_P2P_SERVICE);
+        mWifiP2pChannel = mWifiP2pManager.initialize(this, getMainLooper(), null);
+
+        mWifiP2pManager.addLocalService(mWifiP2pChannel, mWifiP2pDnsSdServiceInfo, new WifiP2pManager.ActionListener() {
+            @Override
+            public void onSuccess() {
+                Log.d(TAG, "Local service added with success: " + Build.DEVICE + SERVICE_NAME);
+            }
+
+            @Override
+            public void onFailure(int reasonCode) {
+                Log.e(TAG, "Local add service failed: " + reasonCode);
+            }
+        });
+
+        mWifiP2pManager.setDnsSdResponseListeners(mWifiP2pChannel,
+                new WifiP2pManager.DnsSdServiceResponseListener() {
+                    @Override
+                    public void onDnsSdServiceAvailable(String instanceName,
+                                                        String registrationType,
+                                                        WifiP2pDevice device) {
+                        Log.d(TAG, "Service Found: " + instanceName + " - " + registrationType);
+                    }
+                },
+                new WifiP2pManager.DnsSdTxtRecordListener() {
+                    @Override
+                    public void onDnsSdTxtRecordAvailable(String fullDomainName,
+                                                          Map<String, String> record,
+                                                          final WifiP2pDevice device) {
+                        Log.d(TAG, "Device name: " + device.deviceName);
+                        Log.d(TAG, device.deviceName + ": port: " + record.get("port"));
+
+                        mPeer = device;
+                        mPeerPort = Integer.parseInt(record.get("port"));
+                        Log.d(TAG, "Peer port: " + mPeerPort);
+
+                        if (fullDomainName.contains(mDeviceName)) {
+                            Log.d(TAG, "Trying to connect himself: " + mDeviceName);
+                            return;
+                        }
+
+
+                        if (fullDomainName.contains(SERVICE_NAME)) {
+                            WifiP2pConfig wifiP2pConfig = new WifiP2pConfig();
+                            wifiP2pConfig.deviceAddress = device.deviceAddress;
+                            wifiP2pConfig.wps.setup = WpsInfo.PBC;
+
+                            /*if (mWifiP2pDnsSdServiceRequest != null)
+                                mWifiP2pManager.removeServiceRequest(mWifiP2pChannel,
+                                        mWifiP2pDnsSdServiceRequest, new WifiP2pManager.ActionListener() {
+                                            @Override
+                                            public void onSuccess() {
+                                                Log.d(TAG, "Service request removed");
+                                            }
+
+                                            @Override
+                                            public void onFailure(int reason) {
+                                                Log.d(TAG, "Remove service request failed: " + reason);
+                                            }
+                                        }
+                                );*/
+
+                            if (mDataToSend) {
+                                mWifiP2pManager.connect(mWifiP2pChannel, wifiP2pConfig, new WifiP2pManager.ActionListener() {
+
+                                    @Override
+                                    public void onSuccess() {
+                                        Log.d(TAG, "Connecting to " + device.deviceName);
+                                    }
+
+                                    @Override
+                                    public void onFailure(int reason) {
+                                        Log.d(TAG, "Connection failed: " + reason);
+                                    }
+                                });
+                            }
+                        }
+                    }
+                }
+        );
+
+        mWifiP2pDnsSdServiceRequest = WifiP2pDnsSdServiceRequest.newInstance();
+
+        mWifiP2pManager.addServiceRequest(mWifiP2pChannel, mWifiP2pDnsSdServiceRequest, new WifiP2pManager.ActionListener() {
+            @Override
+            public void onSuccess() {
+                Log.d(TAG, "Service request added with success");
+            }
+
+            @Override
+            public void onFailure(int error) {
+                Log.e(TAG, "Add service request failed: " + error);
+            }
+        });
+
+        // Start server thread
+        // -----------------------------------------------------------------------------------------
+        mP2PServerThread = new P2PServerThread(serverSocket);
+        mP2PServerThread.start();
     }
 
     @Override
@@ -95,7 +236,24 @@ public class P2PService extends Service {
         super.onDestroy();
         Log.d(TAG, "onDestroy");
 
-        stopServiceDiscovery();
+        // unregisterNetworkService();
+
+        stopServerThread();
+
+        // stopNetworkServiceDiscovery();
+        stopDirectServiceDiscovery();
+
+        unregisterReceiver(mWifiBroadcastReceiver);
+    }
+
+    private void unregisterNetworkService() {
+        mNsdManager.unregisterService(mRegistrationListener);
+    }
+
+    private void stopServerThread() {
+        if (mP2PServerThread != null && mP2PServerThread.isAlive()) {
+            mP2PServerThread.finish();
+        }
     }
 
     @Override
@@ -107,9 +265,25 @@ public class P2PService extends Service {
         initResolveListener();
         initDiscoveryListener();
 
-        mIsServiceDiscoveryRunning = true;
-        mNsdManager.discoverServices(
-                SERVICE_TYPE, NsdManager.PROTOCOL_DNS_SD, mDiscoveryListener);
+        // Network wifi
+        // -----------------------------------------------------------------------------------------
+        /*mNsdManager.discoverServices(
+                SERVICE_TYPE, NsdManager.PROTOCOL_DNS_SD, mDiscoveryListener);*/
+
+
+        // Direct wifi
+        // -----------------------------------------------------------------------------------------
+        mWifiP2pManager.discoverServices(mWifiP2pChannel, new WifiP2pManager.ActionListener() {
+            @Override
+            public void onSuccess() {
+                Log.d(TAG, "Services discovery initiated");
+            }
+
+            @Override
+            public void onFailure(int code) {
+                Log.e(TAG, "Services discovery failed: " + code);
+            }
+        });
     }
 
     private void initResolveListener() {
@@ -121,7 +295,7 @@ public class P2PService extends Service {
 
             @Override
             public void onServiceResolved(NsdServiceInfo serviceInfo) {
-                Log.d(TAG, "Resolve Succeeded: \n" + serviceInfo);
+                Log.d(TAG, "Resolve Succeeded: " + serviceInfo);
 
                 Log.d(TAG, "Data to send?: " + String.valueOf(mDataToSend));
 
@@ -129,8 +303,7 @@ public class P2PService extends Service {
                     int servicePort = serviceInfo.getPort();
                     InetAddress serviceHost = serviceInfo.getHost();
 
-                    mP2PClientThread = new P2PClientThread(serviceHost, servicePort);
-                    mP2PClientThread.start();
+                    new P2PClientThread(serviceHost, servicePort).start();
 
                     mDataToSend = false;
                 }
@@ -138,10 +311,50 @@ public class P2PService extends Service {
         };
     }
 
-    private void stopServiceDiscovery() {
-        if (mIsServiceDiscoveryRunning) {
-            mIsServiceDiscoveryRunning = false;
-            mNsdManager.stopServiceDiscovery(mDiscoveryListener);
+    private void stopNetworkServiceDiscovery() {
+        mNsdManager.stopServiceDiscovery(mDiscoveryListener);
+    }
+
+    private void stopDirectServiceDiscovery() {
+        if (mWifiP2pManager != null && mWifiP2pChannel != null) {
+            mWifiP2pManager.stopPeerDiscovery(mWifiP2pChannel, new WifiP2pManager.ActionListener() {
+
+                @Override
+                public void onFailure(int reasonCode) {
+                    Log.d(TAG, "Stop discovery failed: " + reasonCode);
+                }
+
+                @Override
+                public void onSuccess() {
+                }
+
+            });
+
+            mWifiP2pManager.removeLocalService(mWifiP2pChannel, mWifiP2pDnsSdServiceInfo, new WifiP2pManager.ActionListener() {
+
+                @Override
+                public void onFailure(int reasonCode) {
+                    Log.d(TAG, "Remove local service failed: " + reasonCode);
+                }
+
+                @Override
+                public void onSuccess() {
+                }
+
+            });
+
+            mWifiP2pManager.removeGroup(mWifiP2pChannel, new WifiP2pManager.ActionListener() {
+
+                @Override
+                public void onFailure(int reasonCode) {
+                    Log.d(TAG, "Remove group failed: " + reasonCode);
+                }
+
+                @Override
+                public void onSuccess() {
+                }
+
+            });
         }
     }
 
@@ -150,13 +363,11 @@ public class P2PService extends Service {
             @Override
             public void onStartDiscoveryFailed(String serviceType, int errorCode) {
                 Log.d(TAG, "Discovery failed: " + errorCode);
-                mNsdManager.stopServiceDiscovery(mDiscoveryListener);
             }
 
             @Override
             public void onStopDiscoveryFailed(String serviceType, int errorCode) {
                 Log.d(TAG, "Discovery failed: " + errorCode);
-                mNsdManager.stopServiceDiscovery(mDiscoveryListener);
             }
 
             @Override
@@ -187,5 +398,14 @@ public class P2PService extends Service {
                 Log.d(TAG, "Service lost: " + serviceInfo);
             }
         };
+    }
+
+    public void clientProcess(WifiP2pInfo wifiP2pInfo) {
+        new P2PClientThread(wifiP2pInfo.groupOwnerAddress, mPeerPort).start();
+        mDataToSend = false;
+    }
+
+    public void setDeviceName(String deviceName) {
+        mDeviceName = deviceName;
     }
 }

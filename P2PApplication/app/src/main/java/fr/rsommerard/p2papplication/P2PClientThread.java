@@ -43,7 +43,7 @@ public class P2PClientThread extends Thread implements Runnable {
 
             Log.d(TAG, "disconnected to server");
         } catch (IOException e) {
-            Log.d(TAG, "Exception: \n" + e.getMessage());
+            Log.d(TAG, "Exception: " + e.getMessage());
             // Nothing
         }
     }
